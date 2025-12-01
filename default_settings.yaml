@@ -1,0 +1,4 @@
+settings:
+  log_folder: outputs
+  data_folder: ./datasets
+  openai_api_key: "<OPENAI_API_KEY>"
