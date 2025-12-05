@@ -10,17 +10,20 @@ from models.llava.mm_utils import KeywordsStoppingCriteria
 import warnings
 warnings.filterwarnings("ignore")
 
-default_model_path = "llava-hf/llava-1.5-13b-hf"
+default_model_path = "llava-hf/llava-1.5-7b-hf"
+# default_model_path = "llava-hf/llava-1.5-13b-hf"
 
 class LLaVA_Model_HF(BaseModel):
     def __init__(self, temperature, max_new_tokens, num_beams, do_sample, top_p, opera_decoding, vcd_decoding, model_path: str = default_model_path, model_base: str = None, model_name: str = "llava-v1.5", conv_mode: str = "llava_v1", contrastive: bool = False, alt_text: bool = False,  excel: bool = False,cd_alpha=None, cd_beta=None, use_simple_diff: bool = False):
         super().__init__(model_name=model_name, model_path=model_path, contrastive=contrastive, alt_text=alt_text, excel=excel, opera_decoding=opera_decoding, vcd_decoding=vcd_decoding, cd_alpha=cd_alpha, use_simple_diff=use_simple_diff)
         self.cd_beta = cd_beta
-        self.processor = AutoProcessor.from_pretrained(default_model_path, revision='0fad4a3be201ea4a735c381d4595150a8538d3b4')#use_fast=False
+        self.processor = AutoProcessor.from_pretrained(default_model_path, revision='a272c74b2481d8aff3aa6fc2c4bf891fe57334fb')
+        # 13bなら 0fad4a3be201ea4a735c381d4595150a8538d3b4
+        # 7bなら a272c74b2481d8aff3aa6fc2c4bf891fe57334fb
         if opera_decoding:
-            self.model = LlavaForConditionalGeneration.from_pretrained(default_model_path, device_map="auto", torch_dtype=torch.float16, attn_implementation="eager", revision='0fad4a3be201ea4a735c381d4595150a8538d3b4').eval()
+            self.model = LlavaForConditionalGeneration.from_pretrained(default_model_path, device_map="auto", torch_dtype=torch.float16, attn_implementation="eager", revision='a272c74b2481d8aff3aa6fc2c4bf891fe57334fb').eval()
         else:
-            self.model = LlavaForConditionalGeneration.from_pretrained(default_model_path, device_map="auto", torch_dtype=torch.float16, revision='0fad4a3be201ea4a735c381d4595150a8538d3b4').eval()
+            self.model = LlavaForConditionalGeneration.from_pretrained(default_model_path, device_map="auto", torch_dtype=torch.float16, revision='a272c74b2481d8aff3aa6fc2c4bf891fe57334fb').eval()
         self.conv_mode = conv_mode
         
         self.max_new_tokens = max_new_tokens

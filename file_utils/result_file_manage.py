@@ -90,7 +90,7 @@ class ResultFileManager:
         return sorted(result_files)
 
     def _get_new_result_filename(self):
-        date = "{}{}".format("%02d"%datetime.datetime.now().month, datetime.datetime.now().day)
+        date = "{}{}".format("%02d"%datetime.datetime.now().month, "%02d"%datetime.datetime.now().day)
         result_files_list = self._list_result_files()
         version_list = []
         for filename in result_files_list:
@@ -151,7 +151,11 @@ class ResultFileManager:
             cd_beta = model.cd_beta
         else:
             cd_beta = -1.0
-        model_info = {"temperature": temperature, "max_new_tokens": max_new_tokens, "num_beams": num_beams, "do_sample": do_sample, "top_p": top_p, "alt-text": alt_text, "contrastive": contrastive, "cd_alpha": cd_alpha, "cd_beta": cd_beta, "opera_decoding": opera_decoding, "vcd_decoding": vcd_decoding}
+        if hasattr(model, "use_simple_diff"):
+            use_simple_diff = model.use_simple_diff
+        else:
+            use_simple_diff = False
+        model_info = {"temperature": temperature, "max_new_tokens": max_new_tokens, "num_beams": num_beams, "do_sample": do_sample, "top_p": top_p, "alt-text": alt_text, "contrastive": contrastive, "cd_alpha": cd_alpha, "cd_beta": cd_beta, "opera_decoding": opera_decoding, "vcd_decoding": vcd_decoding, "use_simple_diff": use_simple_diff}
         return model_info
 
     def save_result(self, image_id, question, gt_ans, pred_ans, raw_pred, model_info, mmvp_gpt_grade="", category_pope_mme=""):

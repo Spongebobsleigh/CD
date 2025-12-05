@@ -10,40 +10,47 @@ def contrastive_decoding (processor, model_kwargs, next_token_logits, next_token
     use_simple_diff = model_kwargs.get("use_simple_diff", False)
     
     if use_simple_diff:
-        # # print("use_simple_diff is True")
-        # # version 2: logit空間でcutoffを計算（vcd_sample.pyと統一）
-        # cutoff = torch.log(torch.tensor(cd_beta, device=next_token_logits.device)) + next_token_logits.max(dim=-1, keepdim=True).values
-        # cd_logits = next_token_logits + cd_alpha * (next_token_logits - next_token_logits_cd)
-        # cd_logits = cd_logits.masked_fill(next_token_logits < cutoff, -float("inf"))
-        # # cd_logits = cd_logits.masked_fill(probs < cutoff, -float("inf"))
-        
-        # エントロピーベースの適応的パラメータ調整（オプション）
-        # エントロピーを計算
-        probs = nn.functional.softmax(next_token_logits, dim=-1)
-        entropy = torch.distributions.Categorical(probs=probs).entropy()
-        # print(f"entropy: {entropy}")
-        # エントロピーを正規化（最大エントロピー = log(vocab_size)で割る）
-        # max_entropy = torch.log(torch.tensor(probs.size(-1), dtype=torch.float32, device=entropy.device))
-        # print(f"max_entropy: {max_entropy}")
-        # normalized_entropy = entropy / max_entropy  # 0-1の範囲
-        normalized_entropy = entropy
-        # エントロピーが高ければα/βを大きく、低ければベース値(1.0)に近づける
-        # entropy_factor = normalized_entropy.unsqueeze(-1)
-        entropy_factor = normalized_entropy
+        # p_v のエントロピーを計算
+        probs = nn.functional.softmax(next_token_logits, dim=-1)  # [B, V]
+        entropy = torch.distributions.Categorical(probs=probs).entropy()  # [B]
 
-        cd_alpha_adaptive = entropy_factor * cd_alpha
-        cd_beta_adaptive = entropy_factor * cd_beta
-        # print(f" {cd_alpha_adaptive}, {cd_beta_adaptive}")
-        # version 2: logit空間でcutoffを計算（vcd_sample.pyと統一）
-        if isinstance(cd_beta_adaptive, torch.Tensor):
-            beta_tensor = cd_beta_adaptive
-        else:
-            beta_tensor = torch.tensor(cd_beta_adaptive, device=next_token_logits.device)
-        cutoff = torch.log(beta_tensor) + next_token_logits.max(dim=-1, keepdim=True).values
+        # 最大エントロピーで正規化（0〜1）
+        vocab_size = probs.size(-1)
+        # print(f"vocab_size: {vocab_size}")
+        max_entropy = torch.log(torch.tensor(vocab_size, dtype=probs.dtype,
+                                            device=probs.device))
+        h = (entropy / max_entropy).clamp(0.0, 1.0)  # [B]
+        # print(f"h: {h}")
+
+        # モデル側で設定するベース値（kwargs から取れるようにしてもOK）
+        # alpha_min = model_kwargs.get("cd_alpha_min", 0.2 * cd_alpha)
+        # alpha_max = model_kwargs.get("cd_alpha_max", 1.5 * cd_alpha)
+        # beta_min  = model_kwargs.get("cd_beta_min",  0.5 * cd_beta)
+        # beta_max  = model_kwargs.get("cd_beta_max",  0.95)  # β<=1 にしておく
+        alpha_min = 0.0
+        alpha_max = 10.0
+        beta_min = 0.0
+        beta_max = 10.0
+
+        # 線形補間で α(h), β(h) を決める
+        # h: [B] -> [B,1] にして logit とブロードキャスト
+        h_unsq = h.unsqueeze(-1)  # [B, 1]
+
+        # cd_alpha_adaptive = alpha_min + h_unsq * (alpha_max - alpha_min)  # [B,1]
+        # cd_beta_adaptive  = beta_min  + h_unsq * (beta_max  - beta_min)   # [B,1]
+        cd_alpha_adaptive = alpha_max * h_unsq
+        cd_beta_adaptive = 1.0 - beta_max * h_unsq
+
+        # logit 空間で cutoff を計算
+        max_logit = next_token_logits.max(dim=-1, keepdim=True).values  # [B,1]
+        cutoff = torch.log(cd_beta_adaptive) + max_logit                # [B,1]
+
+        # CD ロジット
         cd_logits = next_token_logits + cd_alpha_adaptive * (next_token_logits - next_token_logits_cd)
         cd_logits = cd_logits.masked_fill(next_token_logits < cutoff, -float("inf"))
-        
-        kl_d = None  # 単純差分モードではkl_dは計算しない
+
+        kl_d = None
+
 
     else:
         # 既存のKL divergenceベースの実装

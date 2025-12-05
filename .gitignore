@@ -172,7 +172,10 @@ results/
 .device_map/
 *.png
 
-# datasets
 datasets/
 default_settings.yaml
 README.md
+LICENSE
+z.py
+dataset_dl.py
+example.jpg
