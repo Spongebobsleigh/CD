@@ -35,6 +35,7 @@ from openpyxl import Workbook
 from openpyxl.drawing.image import Image as ExcelImage
 import io
 from PIL import Image
+from tools.prob_vis import log_token_distribution
 
 def _greedy_search(
         self,
@@ -222,6 +223,7 @@ def _greedy_search(
         results = []
         description = []
         use_cd = False
+        step_count = 0
         alt_text = False
         is_start = True
         input_dict = None
@@ -293,8 +295,21 @@ def _greedy_search(
                 next_token_logits_cd = outputs_cd.logits[:, -1, :]
 
                 cd_logits, results, description = contrastive_decoding(processor, model_kwargs, next_token_logits, next_token_logits_cd, results, description)
-                    
+                
                 next_tokens_scores = logits_processor(input_ids, cd_logits).to(device=input_ids.device)
+                # top5確率分布を保存
+                # tokenizer = getattr(self, "cd_tokenizer", None)
+                # meta = {
+                #     "mode": "cd_greedy",
+                #     "dataset": model_kwargs.get("dataset_name"),
+                #     "contrastive": use_cd,
+                # }
+                # log_token_distribution(
+                #     next_tokens_scores,
+                #     tokenizer,
+                #     step=step_count,
+                #     meta=meta,
+                # )
             # Store scores, attentions and hidden_states when required
             if return_dict_in_generate:
                 if output_scores:
@@ -342,6 +357,7 @@ def _greedy_search(
                     is_encoder_decoder=self.config.is_encoder_decoder,
                 )
 
+            step_count += 1
             unfinished_sequences = unfinished_sequences & ~stopping_criteria(input_ids, scores)
             this_peer_finished = unfinished_sequences.max() == 0
 

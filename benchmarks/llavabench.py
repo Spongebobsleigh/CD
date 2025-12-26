@@ -39,9 +39,9 @@ api_key = get_openai_api_key()
 openai.api_key = api_key
 def get_eval(content: str, max_tokens: int):
     # model = "gpt-4-0125-preview" #"gpt-4-0613"
-    # model = "gpt-4o-mini" 
+    model = "gpt-4o-mini" 
     # model = "gpt-4.1-nano" 
-    model = "gpt-5-nano" 
+    # model = "gpt-5-nano" 
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}"

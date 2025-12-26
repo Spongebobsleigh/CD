@@ -29,12 +29,13 @@ class PopeDataset(BaseEvalDataset):
             os.makedirs(default_output_path)
 
     def parse_pred(self, text):
+        # print(f"{text}")
         if text.find(".") != -1:
             text = text.split(".")[0]
 
         text = text.replace(",", "").lower()
         words = text.split(" ")
-
+        # print(f"{words}")
         if "not" in words or "no" in words:
             return "no"
         else:

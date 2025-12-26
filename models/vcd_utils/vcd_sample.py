@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Un
 import torch
 import torch.distributed as dist
 from torch import nn
+import torch.nn.functional as F
 
 from transformers.generation.logits_process import (
     LogitsProcessorList,
@@ -23,6 +24,86 @@ from transformers.generation.utils import (
     SampleEncoderDecoderOutput,
     SampleDecoderOnlyOutput
 )
+
+from tools.prob_vis import log_token_distribution
+
+print("VCD multinomial")
+
+def _normalized_wasserstein_distance(probs_a: torch.Tensor, probs_b: torch.Tensor) -> torch.Tensor:
+    """カテゴリ分布間の正規化された1次元Wasserstein距離を計算する。"""
+    # 1次元に限定することで密な輸送行列を作る必要がなくなる。
+    # 累積和を使えば離散かつ等間隔の支持集合におけるEarth-Mover距離を厳密に求められる。
+    cdf_diff = torch.cumsum(probs_a - probs_b, dim=-1)
+    print(cdf_diff[0,0:20])
+    print("-------------")
+    emd = torch.abs(cdf_diff).sum(dim=-1)
+    # print(emd.shape)
+    print("-------------")
+    print(emd)
+    vocab_size = probs_a.size(-1)
+    max_distance = max(vocab_size - 1, 1)
+    denom = torch.tensor(float(max_distance), device=probs_a.device, dtype=probs_a.dtype)
+    normalized = torch.clamp(emd / denom, min=0.0, max=1.0)
+    # print(normalized)
+    return normalized
+
+
+def _embedding_sinkhorn_distance(
+    probs_a: torch.Tensor,
+    probs_b: torch.Tensor,
+    embeddings: torch.nn.Embedding,
+    *,
+    topk: int = 32064,
+    lamda: float = 5,
+    iters: int = 20,
+) -> torch.Tensor:
+    weight = embeddings.weight.to(device=probs_a.device, dtype=probs_a.dtype)
+    k = min(topk, weight.size(0))
+    distances = []
+
+    for a_row, b_row in zip(probs_a, probs_b):
+        # 1) 両分布それぞれのTop-Kを取り、和集合をサポートとする
+        idx_a = torch.topk(a_row, k).indices
+        idx_b = torch.topk(b_row, k).indices
+        support_idx = torch.unique(torch.cat([idx_a, idx_b], dim=0)).sort().values
+
+        # 2) サポート上に確率を再正規化（マスを残した部分だけで分布を作る）
+        a = a_row[support_idx].clamp_min(0)
+        b = b_row[support_idx].clamp_min(0)
+        # tv = 0.5 * (a - b).abs().sum()
+        # print("TV:", tv.item())
+        a = a / a.sum().clamp_min(1e-8)
+        b = b / b.sum().clamp_min(1e-8)
+
+        # 3) サポートの埋め込みからL2距離コスト行列を構築
+        emb = weight[support_idx]
+        # emb = F.normalize(emb, dim=-1)
+        # cost = (1.0 - emb @ emb.t()).clamp_min(0.0)  # cosine cost in [0,2]
+        cost = torch.cdist(emb, emb, p=2)
+        # print(f"mean:{cost.mean()}, max:{cost.max()}, size:{cost.shape}")
+
+        # 4) Sinkhorn用にカーネル行列Kを作成（εでスムーズ化）
+        K = torch.exp(-cost * lamda)
+        # print(f"{K[0,:10]}")
+
+        # 5) 反復Bregman投影でカップリングを近似（u,vはスケーリング係数）
+        u = torch.ones_like(a)
+        v = torch.ones_like(b)
+        for _ in range(iters):
+            u = a / (K @ v)
+            v = b / (K.t() @ u)
+            # print(f"u:{u[:3]}, v:{v[:3]}")
+        # print("------------")
+
+        # 6) 得られた輸送計画transportとコストで期待コストを計算し、平均コストで正規化
+        transport_plan = torch.outer(u, v) * K
+        dist = (transport_plan * cost).sum()
+        # print(f"mean:{transport_plan.mean()}, max:{transport_plan.max()}")
+        # distances.append(torch.clamp(dist / cost.mean(), min=0.0, max=1.0))
+        distances.append(dist)
+        # print(distances)
+    # print(distances)
+    return torch.stack(distances)
 
 def sample(
     self,
@@ -91,6 +172,11 @@ def sample(
 
     this_peer_finished = False  # used by synced_gpus only
     is_start=True
+    step_count = 0
+    # Keep a separate cache/state for the contrastive (noisy image) forward pass.
+    # If we rebuild model_kwargs_cd from model_kwargs every step, it will reuse the
+    # original-image past_key_values and become identical after step 0.
+    model_kwargs_cd = model_kwargs.copy()
 
     # auto-regressive generation
     while True:
@@ -127,20 +213,22 @@ def sample(
         output_hidden_states_wo_img = (
             output_hidden_states if output_hidden_states is not None else self.generation_config.output_hidden_states
         )
-        
-        model_kwargs_cd = model_kwargs.copy()
-        
+
         ## cd_comments: forward pass of the model with distorted image input
         model_inputs_cd = self.prepare_inputs_for_generation(input_ids, **model_kwargs_cd)
 
-        if 'image_cd' in model_kwargs:
+        if 'image_cd' in model_kwargs_cd:
             if 'pixel_values' in model_inputs_cd:
-                model_inputs_cd['pixel_values'] = model_kwargs["image_cd"]
+                model_inputs_cd['pixel_values'] = model_kwargs_cd["image_cd"]
+                # print("pi") #全部こっちを通過すればいい
             elif 'images' in model_inputs_cd:
-                model_inputs_cd['images'] = model_kwargs["image_cd"]
+                model_inputs_cd['images'] = model_kwargs_cd["image_cd"]
+                print("im")
+            else:
+                print("else")
 
-        elif is_start and ('cd_input_embed' in model_kwargs):
-            model_inputs_cd['inputs_embeds'] = model_kwargs['cd_input_embed']
+        elif is_start and ('cd_input_embed' in model_kwargs_cd):
+            model_inputs_cd['inputs_embeds'] = model_kwargs_cd['cd_input_embed']
             is_start=False
         
         # if ('image_cd' not in model_kwargs) == ('cd_input_embed' not in model_kwargs):
@@ -156,28 +244,117 @@ def sample(
         next_token_logits_cd = outputs_cd.logits[:, -1, :]
         
         ## cd_comments: pre-process logits from contrastive inputs
-        cd_alpha = 1
-        cd_beta = 0.1
-        
         # version 1  set cutoff for Adaptive Plausibility Constraints
         # probs = nn.functional.softmax(next_token_logits, dim=-1)
         # cutoff = cd_beta * probs.max(dim=-1, keepdim=True).values
-
-        # version 2 set cutoff for Adaptive Plausibility Constraints
-        cutoff = torch.log(torch.tensor(cd_beta)) + next_token_logits.max(dim=-1, keepdim=True).values
         
-        diffs = (1+cd_alpha)*next_token_logits - cd_alpha*next_token_logits_cd
-        cd_logits = diffs.masked_fill(next_token_logits < cutoff, -float("inf"))
+        # version 2 set cutoff for Adaptive Plausibility Constraints
+        # cutoff = torch.log(torch.tensor(cd_beta)) + next_token_logits.max(dim=-1, keepdim=True).values
+        
+        # diffs = (1+cd_alpha)*next_token_logits - cd_alpha*next_token_logits_cd
+        # cd_logits = diffs.masked_fill(next_token_logits < cutoff, -float("inf"))
+        cd_alpha = model_kwargs.get("cd_alpha", 1.0)
+        cd_beta = model_kwargs.get("cd_beta", 0.1)
+        # use_simple_diff = getattr(self, "_use_simple_diff", False)
+        # if not use_simple_diff:
+        #     use_simple_diff = model_kwargs.get("use_simple_diff", False)
+        
+        ######################################################################### KL
+        # probs = nn.functional.softmax(next_token_logits, dim=-1)
+        # probs_cd = nn.functional.softmax(next_token_logits_cd, dim=-1)
+
+        # # KL divergence D_KL(p || q)
+        # # 数値安定化のため eps を入れる
+        # eps = 1e-8
+        # kl = (probs * (torch.log(probs + eps) - torch.log(probs_cd + eps))).sum(dim=-1)
+        # print(kl)
+        # h_unsq = kl.unsqueeze(-1)
+
+        # cd_alpha_adaptive = h_unsq
+        # # Encourage exploration when distributions agree
+        # cd_beta_adaptive = (1.0 - cd_alpha_adaptive).clamp(min=1e-6)
+
+        # max_logit = next_token_logits.max(dim=-1, keepdim=True).values
+        # cutoff = torch.log(cd_beta_adaptive) + max_logit
+
+        # cd_logits = next_token_logits + cd_alpha_adaptive * (next_token_logits - next_token_logits_cd)
+        # cutoff_cd_logits = cd_logits.masked_fill(next_token_logits < cutoff, -float("inf"))
+
+        
+        ######################################################################### Proposed
+        # if use_simple_diff:
+        probs = nn.functional.softmax(next_token_logits, dim=-1)
+        probs_cd = nn.functional.softmax(next_token_logits_cd, dim=-1)
+        # Use a Wasserstein distance to gauge distribution mismatch instead of entropy only.
+        # wasserstein = _normalized_wasserstein_distance(probs, probs_cd)
+        # Try an embedding-aware OT distance (Top-K support) if embeddings are available.
+        ot_topk = model_kwargs.get("ot_topk", 3206)
+
+        # print("max_abs_diff:", (probs - probs_cd).abs().max().item())
+        # print("tv_full:", 0.5*(probs - probs_cd).abs().sum(-1).mean().item())
+
+        # print(f"p:{probs}")
+        # print(f"q:{probs_cd}")
+        emb_module = self.get_input_embeddings()
+        if emb_module is not None and ot_topk > 0:
+            wasserstein = _embedding_sinkhorn_distance(
+                probs, probs_cd, emb_module, topk=ot_topk
+            )
+
+        h_unsq = wasserstein.unsqueeze(-1)
+
+        cd_alpha_adaptive = h_unsq
+        # Encourage exploration when distributions agree (
+        cd_beta_adaptive = (1.0 - cd_alpha_adaptive).clamp(min=1e-6)
+        # cd_beta_adaptive = cd_alpha_adaptive
+
+        max_logit = next_token_logits.max(dim=-1, keepdim=True).values
+        cutoff = torch.log(cd_beta_adaptive) + max_logit
+
+        cd_logits = next_token_logits + cd_alpha_adaptive * (next_token_logits - next_token_logits_cd)
+        cutoff_cd_logits = cd_logits.masked_fill(next_token_logits < cutoff, -float("inf"))
+
+        ######################################################################### default
+        # # else: #デフォ
+        # cutoff_base = torch.log(
+        #     torch.tensor(cd_beta, device=next_token_logits.device, dtype=next_token_logits.dtype)
+        # ) + next_token_logits.max(dim=-1, keepdim=True).values
+        
+        # diffs = (1 + cd_alpha) * next_token_logits - cd_alpha * next_token_logits_cd
+        # cd_logits = diffs.masked_fill(next_token_logits < cutoff_base, -float("inf"))
+        # cutoff_cd_logits = cd_logits
+
+        #########################################################################
 
         ## cd_comments: apply temperature warping and top-k filtering in contrastive decoding
-        cd_logits = logits_processor(input_ids, cd_logits)
-        cd_logits = logits_warper(input_ids, cd_logits)
+        cutoff_cd_logits = logits_processor(input_ids, cutoff_cd_logits)
+        cutoff_cd_logits = logits_warper(input_ids, cutoff_cd_logits)
 
-        next_token_scores = cd_logits
-        cd_probs = nn.functional.softmax(cd_logits, dim=-1)
+        next_token_scores = cutoff_cd_logits
+        cd_probs = nn.functional.softmax(cutoff_cd_logits, dim=-1)
         next_tokens = torch.multinomial(cd_probs, num_samples=1).squeeze(1)
 
         next_tokens = next_tokens.to(device=input_ids.device)
+
+        #########################################################################
+
+        # # top5確率分布を保存
+        # tokenizer = getattr(self, "cd_tokenizer", None)
+        # meta = {
+        #     "mode": "vcd_sample",
+        #     "logits": "next_token_logits",
+        #     "contrastive": "True",
+        # }
+        # log_token_distribution(
+        #     next_token_logits,
+        #     tokenizer,
+        #     step=step_count,
+        #     meta=meta,
+        # )
+        # step_count += 1
+        #########################################################################
+
+
         # Store scores, attentions and hidden_states when required
         if return_dict_in_generate:
             if output_scores:

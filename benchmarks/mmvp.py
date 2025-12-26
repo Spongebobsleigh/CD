@@ -32,8 +32,8 @@ def get_yes_no_answer(question):
         try:
             response = client.chat.completions.create(
                 # model='gpt-4-0125-preview', #'gpt-4-0613',
-                model = "gpt-4.1-nano",
-                # model = "gpt-4o-mini", 
+                # model = "gpt-4.1-nano",
+                model = "gpt-4o-mini", 
                 # model = "gpt-5-nano",
                 messages=[{
                     'role': 'system',

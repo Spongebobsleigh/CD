@@ -75,7 +75,7 @@ if __name__ == "__main__":
         default=False,
     )
     args.add_argument( 
-        "--use-simple-diff",
+        "--use_simple_diff",
         action="store_true",
         help="Use simple difference (logits - logits_cd) instead of KL divergence-based contrastive decoding. (Must be used with --contrastive option)",
         default=False,
@@ -169,7 +169,7 @@ if __name__ == "__main__":
     if phrased_args.contrastive:
         assert phrased_args.alt_text, "Argument CONTRASTIVE MUST be used with alt-text"
     if phrased_args.use_simple_diff:
-        assert phrased_args.contrastive, "Argument --use-simple-diff MUST be used with --contrastive"
+        assert phrased_args.contrastive, "Argument --use_simple_diff MUST be used with --contrastive"
 
     if phrased_args.vcd_decoding:
         assert phrased_args.do_sample, "VCD decoding MUST be used with do_sample"

@@ -1,0 +1,2 @@
+{"temperature": 1.0, "max_new_tokens": 2048, "num_beams": 1, "do_sample": true, "top_p": 1.0, "alt-text": false, "contrastive": false, "cd_alpha": 1.0, "cd_beta": 0.1, "opera_decoding": false, "vcd_decoding": true, "use_simple_diff": false}
+{"image_id": "7206072054_c53d53b97d_o", "question": "What color is the fire hydrant cap in the picture?", "gt_ans": "The color of the fire hydrant cap in the image is yellow.", "pred_ans": "no hallucination", "raw_pred": "The fire hydrant cap in the picture is yellow.", "gpt_grade": 5, "category": "attribute"}

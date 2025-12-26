@@ -15,13 +15,14 @@ def contrastive_decoding (processor, model_kwargs, next_token_logits, next_token
         entropy = torch.distributions.Categorical(probs=probs).entropy()  # [B]
 
         # 最大エントロピーで正規化（0〜1）
-        vocab_size = probs.size(-1)
+        # vocab_size = probs.size(-1)
         # print(f"vocab_size: {vocab_size}")
-        max_entropy = torch.log(torch.tensor(vocab_size, dtype=probs.dtype,
-                                            device=probs.device))
-        h = (entropy / max_entropy).clamp(0.0, 1.0)  # [B]
+        # max_entropy = torch.log(torch.tensor(vocab_size, dtype=probs.dtype,
+                                            # device=probs.device))
+        # h = (entropy / max_entropy).clamp(0.0, 1.0)  # [B]
         # print(f"h: {h}")
-
+        print(f"entropy: {entropy}")
+        h = torch.clamp(entropy, max=torch.tensor(1.0, device=entropy.device, dtype=entropy.dtype))
         # モデル側で設定するベース値（kwargs から取れるようにしてもOK）
         # alpha_min = model_kwargs.get("cd_alpha_min", 0.2 * cd_alpha)
         # alpha_max = model_kwargs.get("cd_alpha_max", 1.5 * cd_alpha)
@@ -38,9 +39,11 @@ def contrastive_decoding (processor, model_kwargs, next_token_logits, next_token
 
         # cd_alpha_adaptive = alpha_min + h_unsq * (alpha_max - alpha_min)  # [B,1]
         # cd_beta_adaptive  = beta_min  + h_unsq * (beta_max  - beta_min)   # [B,1]
-        cd_alpha_adaptive = alpha_max * h_unsq
-        cd_beta_adaptive = 1.0 - beta_max * h_unsq
-
+        # cd_alpha_adaptive = alpha_max * h_unsq
+        # cd_beta_adaptive = 1.0 - beta_max * h_unsq
+        cd_alpha_adaptive = h_unsq
+        cd_beta_adaptive = 1.0 - h_unsq
+        # print(f"cd_alpha_adaptive: {cd_alpha_adaptive}, cd_beta_adaptive: {cd_beta_adaptive}")
         # logit 空間で cutoff を計算
         max_logit = next_token_logits.max(dim=-1, keepdim=True).values  # [B,1]
         cutoff = torch.log(cd_beta_adaptive) + max_logit                # [B,1]

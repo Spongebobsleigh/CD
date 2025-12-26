@@ -24,7 +24,10 @@ class LLaVA_Model_HF(BaseModel):
             self.model = LlavaForConditionalGeneration.from_pretrained(default_model_path, device_map="auto", torch_dtype=torch.float16, attn_implementation="eager", revision='a272c74b2481d8aff3aa6fc2c4bf891fe57334fb').eval()
         else:
             self.model = LlavaForConditionalGeneration.from_pretrained(default_model_path, device_map="auto", torch_dtype=torch.float16, revision='a272c74b2481d8aff3aa6fc2c4bf891fe57334fb').eval()
+        self.model._use_simple_diff = self.use_simple_diff
         self.conv_mode = conv_mode
+        if hasattr(self.model, "__setattr__"):
+            setattr(self.model, "cd_tokenizer", self.processor.tokenizer)
         
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
@@ -91,26 +94,35 @@ class LLaVA_Model_HF(BaseModel):
             # Generate output for original input and question
             image_tensor_cd = add_diffusion_noise(input_ids['pixel_values'])
             input_ids['image_cd'] = image_tensor_cd
+            # print("------------") # 値はちゃんと異なってた
+            # print(input_ids['pixel_values'])
+            # print("------------")
+            # print(input_ids['image_cd'])
 
         if make_alttext:
             with torch.inference_mode():
-                output_ids = self.model.generate(
+                generation_output = self.model.generate(
                                                 **input_ids,
                                                 generation_config=self.greedy_condfig,
                                                 use_cache=True,
-                                                stopping_criteria=[stopping_criteria])
+                                                stopping_criteria=[stopping_criteria],
+                                                return_dict_in_generate=True,
+                                                output_scores=True)
         else:
             with torch.inference_mode():
-                output_ids = self.model.generate(
+                generation_output = self.model.generate(
                                                 **input_ids,
                                                 generation_config=self.generation_config,
                                                 use_cache=True,
                                                 stopping_criteria=[stopping_criteria],
                                                 cd_alpha=self.cd_alpha,
-                                                cd_beta=self.cd_beta
+                                                cd_beta=self.cd_beta,
+                                                return_dict_in_generate=True,
+                                                output_scores=True
                                                 )
+        sequences = generation_output.sequences if hasattr(generation_output, "sequences") else generation_output
         
-        outputs = self.processor.batch_decode(output_ids[:, input_ids['input_ids'].shape[1]:], skip_special_tokens=True)[0]
+        outputs = self.processor.batch_decode(sequences[:, input_ids['input_ids'].shape[1]:], skip_special_tokens=True)[0]
 
         outputs = outputs.strip()
         if outputs.endswith(stop_str):
